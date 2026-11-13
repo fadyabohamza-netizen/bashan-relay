@@ -3,14 +3,25 @@
 import http from 'node:http'
 
 const PORT = Number(process.env.PORT || 8080)
-const RELAY_KEY = String(process.env.RELAY_KEY || '').trim()
+// مفتاح واحد (RELAY_KEY) أو عدة مفاتيح مفصولة بفواصل (RELAY_KEYS) — مفتاح مستقل لكل بوت.
+// كل المفاتيح تصل لنفس الريلاي بلا حالة، والتمييز بين البوتات في السجلات عبر اسم مختصر.
+const RELAY_KEYS = new Set(
+  `${process.env.RELAY_KEYS || ''},${process.env.RELAY_KEY || ''}`
+    .split(',')
+    .map((k) => k.trim())
+    .filter(Boolean)
+)
+const keyLabel = (key) => {
+  const idx = [...RELAY_KEYS].indexOf(key)
+  return idx === 0 ? 'default' : `k${idx + 1}`
+}
 const CASHIER_BASE = String(process.env.CASHIER_BASE || 'https://agents.ichancy100.com/global/api/').replace(/\/+$/, '') + '/'
 const ALLOWED = /^(core|User|UserApi|Agent|Player|Statistics)\/[A-Za-z]+$/
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
 
-if (!RELAY_KEY) {
-  console.error('RELAY_KEY is required')
+if (!RELAY_KEYS.size) {
+  console.error('RELAY_KEY or RELAY_KEYS is required')
   process.exit(1)
 }
 
@@ -19,7 +30,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && (req.url === '/health' || req.url === '/' || req.url === '/healthz')) {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, service: 'cashier-relay', uptime: Math.round(process.uptime()) }))
+      res.end(JSON.stringify({ ok: true, service: 'cashier-relay', keys: RELAY_KEYS.size, uptime: Math.round(process.uptime()) }))
       return
     }
     // تشخيص فقط: عنوان الخروج الذي يراه العالم (لا يمس الكاشير ولا يكشف أسراراً).
@@ -40,7 +51,8 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'method_not_allowed' }))
       return
     }
-    if (String(req.headers['x-cashier-proxy-key'] || '') !== RELAY_KEY) {
+    const reqKey = String(req.headers['x-cashier-proxy-key'] || '')
+    if (!RELAY_KEYS.has(reqKey)) {
       res.writeHead(401, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: 'unauthorized' }))
       return
@@ -78,7 +90,7 @@ const server = http.createServer(async (req, res) => {
     if (setCookie.length) headers['set-cookie'] = setCookie
     res.writeHead(upstream.status, headers)
     res.end(buf)
-    console.log(`${path} ${upstream.status} ${Date.now() - started}ms ${buf.length}b`)
+    console.log(`${keyLabel(reqKey)} ${path} ${upstream.status} ${Date.now() - started}ms ${buf.length}b`)
   } catch (e) {
     res.writeHead(502, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ error: 'relay_failed', message: String(e?.message || e) }))
